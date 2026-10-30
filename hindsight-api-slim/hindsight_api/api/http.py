@@ -217,6 +217,8 @@ from hindsight_api.engine.response_models import (
     RerankOptions,
     TemporalWindow,
     TokenUsage,
+    check_mental_model_id,
+    check_mental_model_max_tokens,
 )
 from hindsight_api.engine.retain.attachment_content import (
     CanonicalContent,
@@ -3415,6 +3417,12 @@ class CreatePageRequest(BaseModel):
     max_tokens: int | None = None
     trigger: MentalModelTrigger | None = None
 
+    @field_validator("max_tokens")
+    @classmethod
+    def _max_tokens_like_mental_models(cls, value: int | None) -> int | None:
+        # A page is a mental model; outside this range the INT column overflowed with a 500.
+        return None if value is None else check_mental_model_max_tokens(value)
+
 
 class UpdateNodeRequest(BaseModel):
     """Rename/move a node and/or update a page's options. Each field applies only
@@ -3445,6 +3453,11 @@ class UpdateNodeRequest(BaseModel):
             "other, never both."
         ),
     )
+
+    @field_validator("max_tokens")
+    @classmethod
+    def _max_tokens_like_mental_models(cls, value: int | None) -> int | None:
+        return None if value is None else check_mental_model_max_tokens(value)
 
 
 class CreateKnowledgePageResponse(BaseModel):
@@ -3622,6 +3635,14 @@ class CreateMentalModelRequest(BaseModel):
     tags: list[str] = FieldWithDefault(list, description="Tags for scoped visibility")
     max_tokens: int = Field(default=2048, ge=256, le=8192, description="Maximum tokens for generated content")
     trigger: MentalModelTrigger = FieldWithDefault(MentalModelTrigger, description="Trigger settings")
+
+    @field_validator("id")
+    @classmethod
+    def _id_fits_templates_and_paths(cls, value: str | None) -> str | None:
+        # Documented above but not enforced: an id with "/" could not be read or deleted through the
+        # HTTP API afterwards, and any id outside this form made GET /banks/{id}/export fail for the
+        # whole bank. An empty id keeps meaning "generate one", as before.
+        return check_mental_model_id(value) if value else None
 
 
 class CreateMentalModelResponse(BaseModel):

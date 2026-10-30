@@ -4,14 +4,18 @@ Shared by the HTTP import/export endpoints and by ``MemoryEngine``, which applie
 server's default template (``HINDSIGHT_API_DEFAULT_BANK_TEMPLATE``) to every new bank.
 """
 
-import re
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from hindsight_api.config import RETAIN_EXTRACTION_MODES, get_config
 from hindsight_api.engine.interface import BankTemplateImportWrite
-from hindsight_api.engine.response_models import ConsolidationStrategySpec, FieldWithDefault, MentalModelTrigger
+from hindsight_api.engine.response_models import (
+    ConsolidationStrategySpec,
+    FieldWithDefault,
+    MentalModelTrigger,
+    check_mental_model_id,
+)
 from hindsight_api.engine.retain.entity_labels import LabelGroup, migrate_entity_labels_input
 from hindsight_api.extensions.operation_validator import BankWriteOperation
 from hindsight_api.models import RequestContext
@@ -36,11 +40,7 @@ class BankTemplateMentalModel(BaseModel):
     @field_validator("id")
     @classmethod
     def validate_id(cls, v: str) -> str:
-        if not re.match(r"^[a-z0-9][a-z0-9-]*$", v):
-            raise ValueError(
-                f"Mental model id '{v}' must be alphanumeric lowercase with hyphens, starting with a letter or digit."
-            )
-        return v
+        return check_mental_model_id(v)
 
 
 class BankTemplateConfig(BaseModel):

@@ -6,6 +6,7 @@ API response models should be kept separate and convert from these core models t
 API stability even if internal models change.
 """
 
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import Enum
@@ -117,6 +118,32 @@ class ObservationRef(BaseModel):
     subtype: str = Field(description="Observation subtype: structural, emergent, learned")
     description: str = Field(description="Brief description")
     summary: str | None = Field(default=None, description="Full summary (when looked up in detail)")
+
+
+# Mental model ids end up in URL paths and in bank templates, which only accept this form. A "/" in an
+# id makes the model unreachable through the API, so it can no longer be read or deleted.
+MENTAL_MODEL_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*")
+# Same range as max_tokens on mental models; knowledge pages are mental models.
+MENTAL_MODEL_MAX_TOKENS_MIN = 256
+MENTAL_MODEL_MAX_TOKENS_MAX = 8192
+
+
+def check_mental_model_id(mental_model_id: str) -> str:
+    """Return the id, or raise ValueError when it is not alphanumeric lowercase with hyphens."""
+    # fullmatch, not match with "$", which would let a trailing newline through.
+    if not MENTAL_MODEL_ID_PATTERN.fullmatch(mental_model_id):
+        raise ValueError(
+            f"Mental model id '{mental_model_id}' must be alphanumeric lowercase with hyphens, "
+            "starting with a letter or digit."
+        )
+    return mental_model_id
+
+
+def check_mental_model_max_tokens(max_tokens: int) -> int:
+    """Return max_tokens, or raise ValueError when it is outside the range mental models allow."""
+    if not MENTAL_MODEL_MAX_TOKENS_MIN <= max_tokens <= MENTAL_MODEL_MAX_TOKENS_MAX:
+        raise ValueError(f"max_tokens must be between {MENTAL_MODEL_MAX_TOKENS_MIN} and {MENTAL_MODEL_MAX_TOKENS_MAX}")
+    return max_tokens
 
 
 class DirectiveRef(BaseModel):

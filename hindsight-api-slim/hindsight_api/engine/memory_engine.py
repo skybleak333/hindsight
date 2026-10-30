@@ -741,6 +741,8 @@ from .response_models import (
     TemporalWindow,
     TokenUsage,
     ToolCallTrace,
+    check_mental_model_id,
+    check_mental_model_max_tokens,
 )
 from .response_models import RecallResult as RecallResultModel
 from .retain import bank_utils, embedding_utils
@@ -17785,6 +17787,8 @@ class MemoryEngine(MemoryEngineInterface):
         Returns:
             The created pinned mental model dict
         """
+        if mental_model_id:
+            check_mental_model_id(mental_model_id)
         await self._authenticate_tenant(request_context)
         if self._operation_validator and not _nested_operation_authorized.get():
             if not self._consume_preauthorized_bank_write(
@@ -20244,6 +20248,10 @@ class MemoryEngine(MemoryEngineInterface):
         folder (a uniqueness violation) — the caller should treat that as
         "already exists" (surfaced by the API as a 409).
         """
+        if mental_model_id:
+            check_mental_model_id(mental_model_id)
+        if max_tokens is not None:
+            check_mental_model_max_tokens(max_tokens)
         await self._authenticate_tenant(request_context)
         if self._operation_validator and not _nested_operation_authorized.get():
             ctx = BankWriteContext(
@@ -20804,6 +20812,8 @@ class MemoryEngine(MemoryEngineInterface):
         schedules an async refresh so the page re-synthesizes against the new
         question.
         """
+        if max_tokens is not None:
+            check_mental_model_max_tokens(max_tokens)
         await self._authenticate_tenant(request_context)
         # Bind the destination once, so the rest of the method reads a plain
         # `str | None` and never has to re-narrow the sentinel out of it.
