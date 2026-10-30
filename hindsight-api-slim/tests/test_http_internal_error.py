@@ -14,6 +14,7 @@ shared so the shared version cannot quietly change it.
 
 import logging
 
+import asyncpg
 import pytest
 from fastapi import HTTPException
 
@@ -64,6 +65,63 @@ def test_returns_rather_than_raises():
 )
 def test_detail_is_always_the_stringified_exception(exc):
     assert _raise_through(exc, "GET /v1/x").detail == str(exc)
+
+
+@pytest.mark.parametrize(
+    "driver_error",
+    [
+        asyncpg.exceptions.CharacterNotInRepertoireError('invalid byte sequence for encoding "UTF8": 0x00'),
+        asyncpg.exceptions.UntranslatableCharacterError("unsupported Unicode escape sequence"),
+    ],
+)
+def test_text_the_database_cannot_store_is_a_400(driver_error, caplog):
+    """A NUL byte in a filter, an id or a name is the client's input, not a server fault."""
+    with caplog.at_level(logging.WARNING, logger="hindsight_api.api.http"):
+        result = _raise_through(driver_error, "GET /v1/default/banks/b1/memories/list")
+
+    assert result.status_code == 400
+    assert "NUL byte" in result.detail
+    assert [r.levelno for r in caplog.records] == [logging.WARNING], "no ERROR traceback for client input"
+
+
+def test_text_the_database_cannot_store_is_found_behind_an_engine_wrapper():
+    """Recall wraps the driver error (`raise RuntimeError(...) from e`); the 400 must survive that."""
+    try:
+        try:
+            raise asyncpg.exceptions.CharacterNotInRepertoireError('invalid byte sequence for encoding "UTF8": 0x00')
+        except Exception as inner:
+            raise RuntimeError("Failed to search memories (CharacterNotInRepertoireError)") from inner
+    except Exception as e:
+        result = _internal_error(e, "POST /v1/default/banks/b1/memories/recall")
+
+    assert result.status_code == 400
+
+
+def test_other_database_errors_stay_500():
+    result = _raise_through(asyncpg.exceptions.UndefinedTableError('relation "x" does not exist'), "GET /v1/x")
+    assert result.status_code == 500
+
+
+def test_handlers_with_their_own_catch_all_also_answer_400_for_unstorable_text():
+    """Recall, retain and reflect keep their own catch-all and call _store_unavailable by hand.
+
+    Each of them has to consult _unstorable_text too, or a NUL byte in, say, a recall tag
+    filter still answers 500 while every route using _internal_error answers 400.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(__file__).resolve().parent.parent / "hindsight_api" / "api" / "http.py"
+    tree = ast.parse(source.read_text())
+
+    missing = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+        body = "\n".join(ast.unparse(s) for s in node.body)
+        if "_store_unavailable(e)" in body and "_unstorable_text(e)" not in body:
+            missing.append(node.lineno)
+    assert not missing, f"catch-alls at lines {missing} map store errors but not unstorable text"
 
 
 def test_no_handler_still_builds_the_500_inline():

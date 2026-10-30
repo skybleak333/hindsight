@@ -11,7 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from hindsight_api.config import RETAIN_EXTRACTION_MODES, get_config
 from hindsight_api.engine.interface import BankTemplateImportWrite
-from hindsight_api.engine.response_models import ConsolidationStrategySpec, FieldWithDefault, MentalModelTrigger
+from hindsight_api.engine.response_models import (
+    ConsolidationStrategySpec,
+    FieldWithDefault,
+    MentalModelTrigger,
+    check_directive_priority,
+)
 from hindsight_api.engine.retain.entity_labels import LabelGroup, migrate_entity_labels_input
 from hindsight_api.extensions.operation_validator import BankWriteOperation
 from hindsight_api.models import RequestContext
@@ -285,6 +290,12 @@ class BankTemplateDirective(BaseModel):
     priority: int = Field(default=0, description="Higher priority directives are injected first")
     is_active: bool = Field(default=True, description="Whether this directive is active")
     tags: list[str] = FieldWithDefault(list, description="Tags for filtering")
+
+    @field_validator("priority")
+    @classmethod
+    def _priority_fits_column(cls, value: int) -> int:
+        # Checked with the manifest, so an import fails before it writes anything.
+        return check_directive_priority(value)
 
 
 class BankTemplateManifest(BaseModel):

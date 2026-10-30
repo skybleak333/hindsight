@@ -119,6 +119,18 @@ class ObservationRef(BaseModel):
     summary: str | None = Field(default=None, description="Full summary (when looked up in detail)")
 
 
+# directives.priority is a Postgres INT: a value outside it fails the insert with a 500.
+DIRECTIVE_PRIORITY_MIN = -(2**31)
+DIRECTIVE_PRIORITY_MAX = 2**31 - 1
+
+
+def check_directive_priority(priority: int) -> int:
+    """Return the priority, or raise ValueError when it does not fit the INT column."""
+    if not DIRECTIVE_PRIORITY_MIN <= priority <= DIRECTIVE_PRIORITY_MAX:
+        raise ValueError(f"priority must be between {DIRECTIVE_PRIORITY_MIN} and {DIRECTIVE_PRIORITY_MAX}")
+    return priority
+
+
 class DirectiveRef(BaseModel):
     """Reference to a directive that was applied during reflect."""
 

@@ -741,6 +741,7 @@ from .response_models import (
     TemporalWindow,
     TokenUsage,
     ToolCallTrace,
+    check_directive_priority,
 )
 from .response_models import RecallResult as RecallResultModel
 from .retain import bank_utils, embedding_utils
@@ -12608,7 +12609,14 @@ class MemoryEngine(MemoryEngineInterface):
 
         Returns:
             Dictionary with count of deleted observations
+
+        Raises:
+            ValueError: If memory_id is not a valid UUID
         """
+        try:
+            memory_id = str(uuid.UUID(memory_id))
+        except ValueError:
+            raise ValueError(f"Invalid memory_id: '{memory_id}' is not a valid UUID") from None
         await self._authenticate_tenant(request_context)
         if self._operation_validator:
             ctx = BankWriteContext(
@@ -21725,7 +21733,11 @@ class MemoryEngine(MemoryEngineInterface):
 
         Returns:
             Directive dict or None if not found
+
+        Raises:
+            ValueError: If directive_id is not a valid UUID
         """
+        directive_id = self._require_directive_uuid(directive_id)
         await self._authenticate_tenant(request_context)
         if self._operation_validator:
             ctx = BankReadContext(
@@ -21773,7 +21785,11 @@ class MemoryEngine(MemoryEngineInterface):
 
         Returns:
             The created directive dict
+
+        Raises:
+            ValueError: If priority does not fit the INT column
         """
+        check_directive_priority(priority)
         await self._authenticate_tenant(request_context)
         if self._operation_validator:
             if not self._consume_preauthorized_bank_write(
@@ -21835,7 +21851,13 @@ class MemoryEngine(MemoryEngineInterface):
 
         Returns:
             Updated directive dict or None if not found
+
+        Raises:
+            ValueError: If directive_id is not a valid UUID, or priority does not fit the INT column
         """
+        directive_id = self._require_directive_uuid(directive_id)
+        if priority is not None:
+            check_directive_priority(priority)
         await self._authenticate_tenant(request_context)
         if self._operation_validator:
             if not self._consume_preauthorized_bank_write(
@@ -21915,7 +21937,11 @@ class MemoryEngine(MemoryEngineInterface):
 
         Returns:
             True if deleted, False if not found
+
+        Raises:
+            ValueError: If directive_id is not a valid UUID
         """
+        directive_id = self._require_directive_uuid(directive_id)
         await self._authenticate_tenant(request_context)
         if self._operation_validator:
             ctx = BankWriteContext(
@@ -21934,6 +21960,18 @@ class MemoryEngine(MemoryEngineInterface):
             )
 
         return result == "DELETE 1"
+
+    @staticmethod
+    def _require_directive_uuid(directive_id: str) -> str:
+        """The canonical form of a directive id, or ValueError for a malformed one.
+
+        Canonical because uuid.UUID also accepts "{...}" and "urn:uuid:..." forms that the uuid
+        column rejects; either way the raw string must not reach the query, where it would 500.
+        """
+        try:
+            return str(uuid.UUID(directive_id))
+        except ValueError:
+            raise ValueError(f"Invalid directive_id: '{directive_id}' is not a valid UUID") from None
 
     def _row_to_directive(self, row) -> dict[str, Any]:
         """Convert a database row to a directive dict."""
