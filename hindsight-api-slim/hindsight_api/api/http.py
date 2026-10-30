@@ -325,6 +325,15 @@ def _internal_error(exc: Exception, where: str) -> HTTPException:
 _UNSTORABLE_TEXT_SQLSTATES = frozenset({"22021", "22P05"})
 
 
+def _is_unstorable_text_error(exc: BaseException) -> bool:
+    """A database refusal of client text, or the driver failing to encode an unpaired surrogate."""
+    if getattr(exc, "sqlstate", None) in _UNSTORABLE_TEXT_SQLSTATES:
+        return True
+    # JSON allows "\ud800" on its own, Python decodes it to a lone surrogate, and asyncpg cannot encode
+    # that as UTF-8, so the query never reaches Postgres and only a UnicodeEncodeError is left in the chain.
+    return isinstance(exc, UnicodeEncodeError) and exc.reason == "surrogates not allowed"
+
+
 def _unstorable_text(exc: BaseException) -> HTTPException | None:
     """The 400 for client text Postgres cannot store, or None for any other error.
 
@@ -337,12 +346,12 @@ def _unstorable_text(exc: BaseException) -> HTTPException | None:
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if getattr(cur, "sqlstate", None) in _UNSTORABLE_TEXT_SQLSTATES:
+        if _is_unstorable_text_error(cur):
             logger.warning(f"Rejected client text the database cannot store: {exc}")
             return HTTPException(
                 status_code=400,
-                detail="The request contains a character the database cannot store, such as a NUL byte (U+0000). "
-                "Remove it and retry.",
+                detail="The request contains a character the database cannot store, such as a NUL byte (U+0000) "
+                "or an unpaired surrogate. Remove it and retry.",
             )
         cur = cur.__cause__ or cur.__context__
     return None

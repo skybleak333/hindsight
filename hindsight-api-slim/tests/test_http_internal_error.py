@@ -97,6 +97,28 @@ def test_text_the_database_cannot_store_is_found_behind_an_engine_wrapper():
     assert result.status_code == 400
 
 
+def test_an_unpaired_surrogate_is_a_400():
+    """asyncpg fails to encode "\\ud800" before the query is sent; the cause is a UnicodeEncodeError."""
+    try:
+        try:
+            "a\ud800".encode("utf-8")
+        except UnicodeEncodeError as encode_error:
+            raise asyncpg.exceptions.DataError("invalid input for query argument $2") from encode_error
+    except Exception as e:
+        result = _internal_error(e, "POST /v1/default/banks/b1/directives")
+
+    assert result.status_code == 400
+    assert "unpaired surrogate" in result.detail
+
+
+def test_other_encoding_errors_stay_500():
+    """Only the surrogate case is client text; any other UnicodeEncodeError is a server bug."""
+    try:
+        "ü".encode("ascii")
+    except UnicodeEncodeError as e:
+        assert _internal_error(e, "GET /v1/x").status_code == 500
+
+
 def test_other_database_errors_stay_500():
     result = _raise_through(asyncpg.exceptions.UndefinedTableError('relation "x" does not exist'), "GET /v1/x")
     assert result.status_code == 500
