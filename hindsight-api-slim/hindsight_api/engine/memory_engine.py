@@ -8244,6 +8244,9 @@ class MemoryEngine(MemoryEngineInterface):
             )
         # The restore checks this again, but the caller should get the 400 now, not a failed operation.
         bank_utils.validate_new_bank_id(target)
+        # Same for an alias of another bank (409).
+        async with acquire_with_retry(backend) as conn:
+            await bank_utils.refuse_alias_as_bank_id_on_conn(conn, target)
         if self._operation_validator:
             await self._validate_operation(
                 self._operation_validator.validate_create_bank(
@@ -8311,6 +8314,9 @@ class MemoryEngine(MemoryEngineInterface):
                 f"Target bank '{target_bank_id}' already exists; a clone writes into a fresh bank "
                 f"(it is not a merge). Delete it first, or choose a different target bank id."
             )
+        # The restore checks this again, but the caller should get the 409 now, not a failed operation.
+        async with acquire_with_retry(backend) as conn:
+            await bank_utils.refuse_alias_as_bank_id_on_conn(conn, target_bank_id)
         if self._operation_validator:
             await self._validate_operation(
                 self._operation_validator.validate_create_bank(

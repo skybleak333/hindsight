@@ -1308,6 +1308,10 @@ async def _restore_bank(
                     f"Target bank '{bank_id}' already exists; import-bank restores into a fresh bank "
                     f"(it is not a merge). Delete the bank first, or pass a different target bank id."
                 )
+            # Checked here, not only in create_bank_row_on_conn: with the config component
+            # the banks row is restored directly and never passes through it. A bank restored
+            # under an alias would take the alias over, since resolution prefers a real bank.
+            await bank_utils.refuse_alias_as_bank_id_on_conn(conn, bank_id)
             # Bank row first — children (documents, mental_models, …) FK to it. Without
             # the config component there is no row to restore, so the bank is created
             # with this instance's defaults and the data lands inside it.

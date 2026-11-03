@@ -1098,6 +1098,18 @@ async def _move_bank_rows(
             raise RenameBankError(f"bank '{old_bank_id}' does not exist in schema '{schema}'")
         if await conn.fetchval(f"SELECT 1 FROM {banks} WHERE bank_id = $1", new_bank_id):
             raise RenameBankError(f"bank '{new_bank_id}' already exists in schema '{schema}'")
+        # A real bank wins over an alias, so renaming onto another bank's alias would take
+        # it over: callers still using it would reach this bank instead of the one it names.
+        aliases = _fq_table("bank_aliases", schema)
+        alias_of = await conn.fetchval(f"SELECT bank_id FROM {aliases} WHERE alias = $1", new_bank_id)
+        if alias_of and alias_of != old_bank_id:
+            raise RenameBankError(
+                f"'{new_bank_id}' is an alias of bank '{alias_of}' in schema '{schema}'; delete the alias first"
+            )
+        if alias_of:
+            # Renaming onto the bank's own alias finishes the migration the alias was for: the
+            # name becomes the bank's id, so it stops being an alias (a bank cannot alias itself).
+            await conn.execute(f"DELETE FROM {aliases} WHERE alias = $1", new_bank_id)
         # An operation's task_payload names its bank, so one run after the rename
         # would work on (and could recreate) the old id.
         active = await conn.fetchval(

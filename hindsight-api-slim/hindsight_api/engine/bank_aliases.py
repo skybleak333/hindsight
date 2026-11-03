@@ -139,8 +139,8 @@ async def invalidate(alias: str) -> None:
 async def alias_exists_on_conn(conn: "DatabaseConnection", alias: str) -> bool:
     """Is this string already an alias? Uncached, and on the caller's connection.
 
-    Used by ``bank_utils.create_bank_row_on_conn`` to refuse creating a bank whose
-    id is already routing elsewhere. Deliberately not cached: it guards a write, and
+    Used by ``bank_utils.refuse_alias_as_bank_id_on_conn`` to refuse creating a bank
+    whose id is already routing elsewhere. Deliberately not cached: it guards a write, and
     a stale "no" here would create exactly the collision it exists to prevent.
     """
     return await conn.fetchval(f"SELECT 1 FROM {fq_table('bank_aliases')} WHERE alias = $1", alias) is not None

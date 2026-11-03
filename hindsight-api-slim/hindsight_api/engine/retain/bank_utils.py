@@ -357,6 +357,25 @@ def validate_new_bank_id(bank_id: str) -> None:
         raise OperationValidationError("Bank id must not start with '_': that prefix is reserved", status_code=400)
 
 
+async def refuse_alias_as_bank_id_on_conn(conn: "DatabaseConnection", bank_id: str) -> None:
+    """Refuse to create a bank under a name that is already an alias of another bank.
+
+    A bank must not be born under a name that already routes somewhere else: the
+    alias would be dead the moment this commits, since resolution prefers a real
+    bank, and every caller still using it would reach the new bank instead. The
+    mirror of the NOT EXISTS in `bank_aliases.create_alias` -- the two tables cannot
+    be covered by one constraint, so every path that writes a ``banks`` row checks
+    the other: this create path, and the restore that clone and transfer import run.
+    The admin ``rename-bank`` checks its schema's aliases itself.
+    """
+    from .. import bank_aliases
+
+    if await bank_aliases.alias_exists_on_conn(conn, bank_id):
+        from hindsight_api.extensions import OperationValidationError
+
+        raise OperationValidationError(f"'{bank_id}' is an alias of another bank", status_code=409)
+
+
 async def create_bank_row_on_conn(conn: "DatabaseConnection", bank_id: str, *, ops: "DataAccessOps") -> bool:
     """Idempotently insert a default bank row and its vector indexes on conn.
 
@@ -375,18 +394,9 @@ async def create_bank_row_on_conn(conn: "DatabaseConnection", bank_id: str, *, o
     # known without a RETURNING round-trip: the index names derive from it, both
     # for the eager create below and for the maintenance operation when a
     # threshold is set.
-    # A bank must not be born under a name that already routes somewhere else: the
-    # alias would be dead the moment this commits, since resolution prefers a real
-    # bank. The mirror of the NOT EXISTS in `bank_aliases.create_alias` -- the two
-    # tables cannot be covered by one constraint, so each write path checks the
-    # other. Only on the create path, which already ran an existence probe, so the
-    # common "bank exists" case pays nothing.
-    from .. import bank_aliases
-
-    if await bank_aliases.alias_exists_on_conn(conn, bank_id):
-        from hindsight_api.extensions import OperationValidationError
-
-        raise OperationValidationError(f"'{bank_id}' is an alias of another bank", status_code=409)
+    # Only on the create path, which already ran an existence probe, so the common
+    # "bank exists" case pays nothing.
+    await refuse_alias_as_bank_id_on_conn(conn, bank_id)
 
     internal_id = uuid.uuid4()
     inserted = await conn.fetchval(

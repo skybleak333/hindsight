@@ -116,6 +116,37 @@ async def test_rename_moves_every_row_and_dry_run_moves_none(rename_schema):
 
 
 @pytest.mark.asyncio
+async def test_rename_refuses_an_alias_name(rename_schema):
+    """A real bank wins over an alias, so renaming onto one would take it over from the
+    bank it names: callers still using the alias would reach the renamed bank."""
+    _, schema, conn = rename_schema
+    await _seed_bank(conn, schema, "old")
+    await _seed_bank(conn, schema, "other")
+    await conn.execute(f"INSERT INTO {schema}.bank_aliases (alias, bank_id) VALUES ('next', 'other')")
+    before = await _counts(conn, schema, "old")
+
+    with pytest.raises(RenameBankError, match="alias of bank 'other'"):
+        await _rename_bank(conn, schema, "old", "next", dry_run=False)
+
+    assert await _counts(conn, schema, "old") == before
+    assert await conn.fetchval(f"SELECT bank_id FROM {schema}.bank_aliases WHERE alias = 'next'") == "other"
+
+
+@pytest.mark.asyncio
+async def test_rename_onto_its_own_alias_makes_it_the_id(rename_schema):
+    """The end of an alias migration: once callers use the new id, renaming onto it
+    retires the old one. The name stops being an alias; the bank's other aliases move."""
+    _, schema, conn = rename_schema
+    await _seed_bank(conn, schema, "old")
+    await conn.execute(f"INSERT INTO {schema}.bank_aliases (alias, bank_id) VALUES ('new', 'old'), ('spare', 'old')")
+
+    await _rename_bank(conn, schema, "old", "new", dry_run=False)
+
+    rows = await conn.fetch(f"SELECT alias, bank_id FROM {schema}.bank_aliases ORDER BY alias")
+    assert [tuple(row) for row in rows] == [("spare", "new")]
+
+
+@pytest.mark.asyncio
 async def test_rename_refuses_without_changing_anything(rename_schema):
     _, schema, conn = rename_schema
     await _seed_bank(conn, schema, "old")

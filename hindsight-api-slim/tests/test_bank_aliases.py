@@ -336,3 +336,78 @@ async def test_promoting_an_alias_of_another_bank_is_a_404(client, memory, bank)
     assert resp.status_code == 404
     # And the other bank's alias was not promoted as a side effect.
     assert _primary(await client.get(f"/v1/default/banks/{other}/aliases")) is None
+
+
+async def _bank_to_copy(memory) -> str:
+    """A second bank for clone and transfer to copy. Empty: the refusal comes before any data is read."""
+    source = f"alias-copy-{uuid.uuid4().hex[:8]}"
+    await memory.ensure_bank_profile(source, request_context=RequestContext())
+    return source
+
+
+async def _export(memory, bank_id: str) -> bytes:
+    from hindsight_api.engine.db_utils import acquire_with_retry
+    from hindsight_api.engine.transfer import export_bank
+
+    async with acquire_with_retry(await memory._get_backend()) as conn:
+        return await export_bank(conn, bank_id, file_storage=memory._file_storage)
+
+
+async def _bank_exists(memory, bank_id: str) -> bool:
+    """Read the banks table itself: the profile cache already holds a miss for the target from the submit check."""
+    from hindsight_api.engine.retain import bank_utils
+
+    return await bank_utils.bank_exists(await memory._get_backend(), bank_id)
+
+
+@pytest.mark.asyncio
+async def test_a_clone_cannot_be_created_under_an_alias(client, memory, bank):
+    """A clone is a new bank too. Created under an alias, it would take the alias over
+    (a real bank always wins), and callers still using it would reach the copy."""
+    source = await _bank_to_copy(memory)
+    alias = f"a-{uuid.uuid4().hex[:8]}"
+    await client.post(f"/v1/default/banks/{bank}/aliases", json={"alias": alias})
+
+    resp = await client.post(f"/v1/default/banks/{source}/clone", params={"target_bank_id": alias})
+    assert resp.status_code == 409, resp.text
+    assert not await _bank_exists(memory, alias)
+    assert (await client.get(f"/v1/default/banks/{alias}/aliases")).json()["bank_id"] == bank
+
+
+@pytest.mark.asyncio
+async def test_a_transfer_import_cannot_restore_under_an_alias(client, memory, bank):
+    source = await _bank_to_copy(memory)
+    alias = f"a-{uuid.uuid4().hex[:8]}"
+    await client.post(f"/v1/default/banks/{bank}/aliases", json={"alias": alias})
+
+    resp = await client.post(
+        f"/v1/default/banks/{source}/transfer/import",
+        params={"target_bank_id": alias},
+        files={"file": ("transfer.zip", await _export(memory, source), "application/zip")},
+    )
+    assert resp.status_code == 409, resp.text
+    assert not await _bank_exists(memory, alias)
+    assert (await client.get(f"/v1/default/banks/{alias}/aliases")).json()["bank_id"] == bank
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bank_config", [True, False])
+async def test_the_restore_itself_refuses_an_alias(client, memory, bank, bank_config):
+    """Checked again where the banks row is written: the admin CLI restores without the
+    HTTP submission, and an alias can appear between submission and the restore. With
+    the config component the row is restored as exported, not created, so the check in
+    the create path never runs for it."""
+    from hindsight_api.engine.transfer import TransferScope
+    from hindsight_api.extensions import OperationValidationError
+
+    source = await _bank_to_copy(memory)
+    archive = await _export(memory, source)
+    alias = f"a-{uuid.uuid4().hex[:8]}"
+    await client.post(f"/v1/default/banks/{bank}/aliases", json={"alias": alias})
+
+    with pytest.raises(OperationValidationError) as exc:
+        await memory.import_bank_async(
+            archive, RequestContext(), target_bank_id=alias, scope=TransferScope(bank_config=bank_config)
+        )
+    assert exc.value.status_code == 409
+    assert not await _bank_exists(memory, alias)
