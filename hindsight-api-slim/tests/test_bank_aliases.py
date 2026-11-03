@@ -167,6 +167,22 @@ async def test_deleting_the_bank_takes_its_aliases_with_it(client, memory, bank)
 
 
 @pytest.mark.asyncio
+async def test_a_deleted_banks_alias_is_free_at_once_even_after_routing(client, memory, bank):
+    """Routing through the alias caches it. Deleting the bank has to drop that entry, as
+    deleting the alias does; otherwise a write to the freed name within the TTL is sent
+    to the deleted id and recreates that bank."""
+    alias = f"a-{uuid.uuid4().hex[:8]}"
+    await client.post(f"/v1/default/banks/{bank}/aliases", json={"alias": alias})
+    assert (await client.get(f"/v1/default/banks/{alias}/aliases")).json()["bank_id"] == bank
+
+    await memory.delete_bank(bank, request_context=RequestContext())
+    resp = await client.put(f"/v1/default/banks/{alias}", json={"name": "Reused name"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["bank_id"] == alias
+    assert not await _bank_exists(memory, bank)
+
+
+@pytest.mark.asyncio
 async def test_a_bank_cannot_alias_itself(client, bank):
     assert (await client.post(f"/v1/default/banks/{bank}/aliases", json={"alias": bank})).status_code == 400
 
