@@ -1272,13 +1272,16 @@ async def _restore_bank(
 
     # `internal_id` is a globally-unique (banks_internal_id_unique) local identifier
     # used only for per-bank index naming — it is NOT part of the bank's logical
-    # state and nothing in the archive references it. Drop it so the column DEFAULT
-    # (gen_random_uuid) mints a fresh one on insert. Keeping the source value makes
-    # the banks INSERT collide with the source bank on a same-instance re-import,
-    # where `ON CONFLICT DO NOTHING` then silently skips the parent row and every
-    # child (mental_models, …) trips its bank_id foreign key. See #3270.
+    # state and nothing in the archive references it. Replace it with a fresh one.
+    # Keeping the source value makes the banks INSERT collide with the source bank
+    # on a same-instance re-import, where `ON CONFLICT DO NOTHING` then silently
+    # skips the parent row and every child (mental_models, …) trips its bank_id
+    # foreign key. See #3270. Minted here rather than by the column default, like
+    # create_bank_row_on_conn does, so the restore can tell its own row from one a
+    # concurrent restore committed first.
+    restored_internal_id = uuid.uuid4()
     for row in parsed.bank_rows.get("banks", []):
-        row.pop("internal_id", None)
+        row["internal_id"] = str(restored_internal_id)
         # A bank's default display name is its id (see create_bank_row_on_conn),
         # so restoring under a new id would leave the copy showing the *source's*
         # id as its name — two banks reading as the same one in any list that
@@ -1322,8 +1325,23 @@ async def _restore_bank(
                     parsed.bank_rows.get("banks", []),
                     bank_rows_json_encoding=bank_rows_json_encoding,
                 )
+                current_internal_id = await conn.fetchval(
+                    f"SELECT internal_id FROM {fq_table('banks')} WHERE bank_id = $1", bank_id
+                )
+                if current_internal_id is None:
+                    raise ValueError("The archive's bank config has no bank row to restore.")
+                created = str(current_internal_id) == str(restored_internal_id)
             else:
-                await bank_utils.create_bank_row_on_conn(conn, bank_id, ops=ops)
+                created = await bank_utils.create_bank_row_on_conn(conn, bank_id, ops=ops)
+            # Two restores into the same fresh id both pass the check above. The second
+            # one's insert waits for the first to commit and then inserts nothing, so
+            # without this it would pour a second copy of every fact into that bank. It
+            # refuses before `on_bank_created`, so it never marks the bank as its own.
+            if not created:
+                raise ValueError(
+                    f"Target bank '{bank_id}' was created by another restore while this one ran; "
+                    f"nothing was restored. Pass a different target bank id to restore this archive too."
+                )
             if on_bank_created is not None:
                 await on_bank_created(conn)
             # The restored banks row bypasses the fresh-INSERT gate that normally
