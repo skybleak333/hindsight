@@ -113,6 +113,59 @@ async def test_deleting_a_bank_deletes_everything_under_its_prefix(api_client, m
 
 
 @pytest.mark.asyncio
+async def test_a_whole_bank_export_is_deleted_with_the_bank(api_client, memory):
+    """The bank export stores its archive under the bank's prefix, like the document export,
+    so deleting the bank takes it too instead of leaving it behind for good."""
+    bank_id = f"files-{uuid.uuid4().hex[:8]}"
+    response = await api_client.post(
+        f"/v1/default/banks/{bank_id}/memories",
+        json={"items": [{"content": "Alice joined Acme.", "document_id": "doc"}], "async": False},
+    )
+    assert response.status_code == 200, response.text
+    response = await api_client.post(f"/v1/default/banks/{bank_id}/transfer/export", json={})
+    assert response.status_code in (200, 202), response.text
+    operation_id = response.json()["operation_id"]
+    response = await api_client.get(f"/v1/default/banks/{bank_id}/operations/{operation_id}")
+    assert response.json()["status"] == "completed", response.text
+    key = response.json()["result_metadata"]["storage_key"]
+    assert key.startswith(bank_storage_prefix(bank_id)), key
+    assert await memory._file_storage.exists(key)
+
+    response = await api_client.delete(f"/v1/default/banks/{bank_id}")
+    assert response.status_code == 200, response.text
+
+    assert not await memory._file_storage.exists(key)
+
+
+@pytest.mark.asyncio
+async def test_a_whole_bank_import_stashes_its_archive_under_the_bank_prefix(api_client, memory, monkeypatch):
+    """The uploaded archive waits for the worker under the bank's prefix, so a bank delete
+    reaches it, and a same-named bank in another tenant does not."""
+    from hindsight_api import RequestContext
+    from hindsight_api.engine.db_utils import acquire_with_retry
+    from hindsight_api.engine.transfer import export_bank
+
+    bank_id = f"files-{uuid.uuid4().hex[:8]}"
+    response = await api_client.put(f"/v1/default/banks/{bank_id}", json={})
+    assert response.status_code in (200, 201), response.text
+    async with acquire_with_retry(await memory._get_backend()) as conn:
+        archive = await export_bank(conn, bank_id)
+
+    stashed: list[str] = []
+    stash = memory._stash_archive
+
+    async def record_the_key(archive, storage_key, bank):
+        stashed.append(storage_key)
+        await stash(archive, storage_key, bank)
+
+    monkeypatch.setattr(memory, "_stash_archive", record_the_key)
+    await memory.submit_bank_import_async(bank_id, archive, RequestContext(), target_bank_id=f"{bank_id}-copy")
+
+    assert len(stashed) == 1
+    assert stashed[0].startswith(bank_storage_prefix(bank_id)), stashed[0]
+
+
+@pytest.mark.asyncio
 async def test_a_file_under_another_tenant_is_not_downloadable_through_a_same_named_bank(api_client, memory):
     """Object stores share one bucket across tenants: authorizing the bank id alone is not enough."""
     bank_id = f"files-{uuid.uuid4().hex[:8]}"
