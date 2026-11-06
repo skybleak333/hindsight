@@ -681,6 +681,16 @@
       "icon": "/img/icons/tealtiger.png"
     },
     {
+      "id": "hindsight-php",
+      "name": "PHP & Laravel AI SDK",
+      "description": "PHP client for Hindsight and long-term memory for Laravel AI SDK agents: a middleware that recalls before each answer and retains after it, queued retains with retries, and a test fake.",
+      "type": "community",
+      "by": "skybleak333",
+      "category": "framework",
+      "link": "https://github.com/skybleak333/hindsight-php",
+      "icon": "/img/icons/php.svg"
+    },
+    {
       "id": "notion-to-hindsight-sync",
       "name": "Notion Sync",
       "description": "Syncs Notion databases into Hindsight so agents can recall your notes. Runs on Cloudflare Workers with incremental sync and deletion handling.",
