@@ -1758,6 +1758,10 @@ def _is_non_retryable_task_error(e: Exception) -> bool:
     # retry_count=0 and dropped the content silently (issue #4453).
     if _is_foreign_key_violation(e):
         return False
+    # Imported here, not at module level: the transfer package is loaded lazily throughout
+    # this module, and this only runs once a task has already failed.
+    from .transfer.importer import BankRestoreRefusedError
+
     return (
         isinstance(e, InvalidRetainRequestError)
         or isinstance(e, asyncpg.exceptions.IntegrityConstraintViolationError)
@@ -1775,6 +1779,9 @@ def _is_non_retryable_task_error(e: Exception) -> bool:
         # An operation validator rejected the refresh's document and did not ask
         # for another run (#5970).
         or (isinstance(e, MentalModelRefreshError) and not e.retryable)
+        # A whole-bank restore refused its target: it exists, another restore created it
+        # first, or the archive has no bank row. A rerun finds the same and refuses again.
+        or isinstance(e, BankRestoreRefusedError)
     )
 
 
@@ -9169,19 +9176,37 @@ class MemoryEngine(MemoryEngineInterface):
                     )
                 )
             # Only a bank this operation created, and only if it is still there (someone
-            # may have deleted the leftovers by hand before the retry ran).
-            if (metadata or {}).get("restored_bank_id") == bank_id and (
-                await bank_utils.get_bank_profile_if_exists(backend, bank_id) is not None
-            ):
-                logger.info("[transfer] Retrying operation %s: discarding partial restore of %s", operation_id, bank_id)
-                await self.delete_bank(bank_id, request_context=request_context)
+            # may have deleted the leftovers by hand before the retry ran). The id alone does
+            # not say that: the leftovers may have been deleted and the id taken by another
+            # bank since, which this retry would then delete as its own. So the marker also
+            # carries the bank row's internal_id, minted per row, and the bank must still have
+            # it. A marker without one comes from an operation that crashed before this check
+            # existed, and keeps the old id-only behaviour.
+            marker = metadata or {}
+            if marker.get("restored_bank_id") == bank_id:
+                async with acquire_with_retry(backend) as conn:
+                    current_internal_id = await conn.fetchval(
+                        f"SELECT internal_id FROM {fq_table('banks')} WHERE bank_id = $1", bank_id
+                    )
+                marked_internal_id = marker.get("restored_bank_internal_id")
+                if current_internal_id is not None and (
+                    marked_internal_id is None or str(current_internal_id) == marked_internal_id
+                ):
+                    logger.info(
+                        "[transfer] Retrying operation %s: discarding partial restore of %s", operation_id, bank_id
+                    )
+                    await self.delete_bank(bank_id, request_context=request_context)
 
             async def on_bank_created(conn: Any) -> None:
+                # Same transaction as the bank row, after the restore checked the row is its own.
+                internal_id = await conn.fetchval(
+                    f"SELECT internal_id FROM {fq_table('banks')} WHERE bank_id = $1", bank_id
+                )
                 await conn.execute(
                     f"UPDATE {operations} "
                     f"SET result_metadata = COALESCE(result_metadata, '{{}}'::jsonb) || $1::jsonb "
                     f"WHERE operation_id = $2",
-                    json.dumps({"restored_bank_id": bank_id}),
+                    json.dumps({"restored_bank_id": bank_id, "restored_bank_internal_id": str(internal_id)}),
                     uuid.UUID(operation_id),
                 )
 

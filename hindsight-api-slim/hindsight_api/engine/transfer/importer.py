@@ -109,6 +109,17 @@ _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 Archive = bytes | IO[bytes]
 
 
+class BankRestoreRefusedError(ValueError):
+    """A whole-bank restore refused its target, and would refuse it again on every run.
+
+    The target bank exists, another restore created it first, or the archive asks for the
+    bank config but carries no bank row. A rerun finds the same bank, or the same archive,
+    and refuses the same way. A ``ValueError`` like before, so existing handlers keep
+    catching it; the worker reads the type to fail the operation at once instead of
+    retrying it.
+    """
+
+
 @dataclass
 class ImportedDocument:
     """A single document successfully imported, with the units it produced.
@@ -1308,7 +1319,7 @@ async def _restore_bank(
             # models/webhooks with whatever is already there (and global-unique ids
             # like webhooks/directives would collide).
             if await conn.fetchval(f"SELECT 1 FROM {fq_table('banks')} WHERE bank_id = $1", bank_id):
-                raise ValueError(
+                raise BankRestoreRefusedError(
                     f"Target bank '{bank_id}' already exists; import-bank restores into a fresh bank "
                     f"(it is not a merge). Delete the bank first, or pass a different target bank id."
                 )
@@ -1331,7 +1342,7 @@ async def _restore_bank(
                 f"SELECT internal_id FROM {fq_table('banks')} WHERE bank_id = $1", bank_id
             )
             if internal_id is None:
-                raise ValueError("The archive's bank config carries no bank row to restore.")
+                raise BankRestoreRefusedError("The archive's bank config carries no bank row to restore.")
             if restoring.bank_config:
                 created = str(internal_id) == minted_internal_id
             # Two restores into the same fresh id both pass the existence check above,
@@ -1340,7 +1351,7 @@ async def _restore_bank(
             # into the winner's bank. Refused before `on_bank_created`, so the loser
             # never marks the bank as its own (a crash-retry would delete it).
             if not created:
-                raise ValueError(
+                raise BankRestoreRefusedError(
                     f"Target bank '{bank_id}' was created by another restore while this one ran; "
                     f"nothing was restored. Pass a different target bank id to restore this archive too."
                 )
