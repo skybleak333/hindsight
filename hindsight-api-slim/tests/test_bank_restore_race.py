@@ -13,6 +13,7 @@ import zipfile
 import pytest
 
 from hindsight_api.engine.db_utils import acquire_with_retry
+from hindsight_api.engine.memory_engine import _is_non_retryable_task_error
 from hindsight_api.engine.transfer import TransferScope, export_bank
 from hindsight_api.engine.transfer.importer import import_bank
 
@@ -70,8 +71,10 @@ async def test_a_second_restore_into_the_same_fresh_bank_is_refused(memory, requ
         )
 
         assert second is not None
-        with pytest.raises(ValueError, match="created by another restore"):
+        with pytest.raises(ValueError, match="created by another restore") as refused:
             await second
+        # A rerun would find the bank there and refuse again: not worth a retry.
+        assert _is_non_retryable_task_error(refused.value)
         assert await _facts(memory, dst, request_context) == source_facts
     finally:
         await memory.delete_bank(src, request_context=request_context)
@@ -95,8 +98,9 @@ async def test_an_archive_whose_config_has_no_bank_row_is_refused(memory, reques
             for name in zin.namelist():
                 zout.writestr(name, b"[]" if name == "banks.json" else zin.read(name))
 
-        with pytest.raises(ValueError, match="no bank row"):
+        with pytest.raises(ValueError, match="no bank row") as refused:
             await memory.import_bank_async(stripped.getvalue(), request_context, target_bank_id=dst)
+        assert _is_non_retryable_task_error(refused.value)
         assert await memory.get_bank_profile(dst, request_context=request_context) is None
     finally:
         await memory.delete_bank(src, request_context=request_context)
