@@ -4425,6 +4425,12 @@ async def _try_delta_retain(
                 else:
                     combined_content = "\n".join([c.get("content", "") for c in contents_dicts])
                 retain_params, merged_tags = _build_retain_params(contents_dicts, document_tags)
+                # Read before the upsert overwrites them: the survivors' relabel below needs them.
+                previous_tags = (
+                    await _delta_store.current_document_tags(
+                        conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=effective_doc_id
+                    )
+                ).tags
                 await fact_storage.upsert_document_metadata(
                     conn,
                     bank_id,
@@ -4479,6 +4485,7 @@ async def _try_delta_retain(
                     retain_params.get("metadata", {}),
                     observation_scopes=retain_params.get("observation_scopes"),
                     label_tag_keys=label_tag_keys(getattr(config, "entity_labels", None)),
+                    previous_tags=previous_tags,
                     ops=pool.ops,
                 )
                 log_buffer.append(
@@ -4685,6 +4692,12 @@ async def _delta_metadata_only(
                 else:
                     combined_content = "\n".join([c.get("content", "") for c in contents_dicts])
                 retain_params, merged_tags = _build_retain_params(contents_dicts, document_tags)
+                # Read before the upsert overwrites them: the relabel below needs them.
+                previous_tags = (
+                    await _meta_store.current_document_tags(
+                        conn=conn, fq_table=fq_table, bank_id=bank_id, document_id=document_id
+                    )
+                ).tags
                 await fact_storage.upsert_document_metadata(
                     conn,
                     bank_id,
@@ -4703,6 +4716,7 @@ async def _delta_metadata_only(
                     retain_params.get("metadata", {}),
                     observation_scopes=retain_params.get("observation_scopes"),
                     label_tag_keys=label_tag_keys(getattr(config, "entity_labels", None)),
+                    previous_tags=previous_tags,
                     ops=pool.ops,
                 )
                 if outbox_callback is not None:

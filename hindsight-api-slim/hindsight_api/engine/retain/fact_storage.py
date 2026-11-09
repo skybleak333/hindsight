@@ -484,6 +484,7 @@ async def update_memory_units_metadata_and_tags(
     *,
     observation_scopes: list | str | None = None,
     label_tag_keys: set[str] | None = None,
+    previous_tags: list[str] | None = None,
     ops=None,
 ) -> int:
     """Update document-level attributes on existing memory units.
@@ -507,6 +508,13 @@ async def update_memory_units_metadata_and_tags(
     their chunk happened to change — and a tags filter returned an arbitrary slice of it.
     Passing no ``label_tag_keys`` (or a bank with no such group) keeps the plain
     overwrite, which is what a document with no label projection wants.
+
+    ``previous_tags`` are the document's tags before this retain. When the retain leaves
+    them as they were (a retry, an append, an edit of another chunk), there is no document
+    tag change to carry, so a survivor keeps the tags it has. Overwriting them anyway undid
+    what ``filter_retain_facts`` gave a memory at extraction (it never sees a survivor
+    again), and rewrote and requeued that memory on every unchanged re-send. ``None`` (not
+    known) keeps the overwrite.
 
     ``metadata`` arrives as the raw retain_params bag (the document row keeps
     the caller's input verbatim), so null-valued keys are dropped here — the
@@ -533,8 +541,12 @@ async def update_memory_units_metadata_and_tags(
     from ..memories import get_memories
     from .entity_labels import split_label_tags
 
+    unchanged = previous_tags is not None and set(previous_tags) == set(tags or [])
+
     def _tags_for(existing: list[str] | None) -> list[str]:
         """The document tags, plus the label projection this unit already carries."""
+        if unchanged:
+            return list(existing or [])
         merged = list(tags or [])
         seen = set(merged)
         for t in split_label_tags(existing, label_tag_keys):
