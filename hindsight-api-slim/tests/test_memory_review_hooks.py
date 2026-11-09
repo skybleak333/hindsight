@@ -152,3 +152,79 @@ async def test_consolidation_writes_only_what_the_extension_kept(
         assert "reviewed" in observations[0]["tags"]
     finally:
         await memory.delete_bank(bank_id, request_context=request_context)
+
+
+class _Restricting(OperationValidatorExtension):
+    """Moves a memory about pay out of the document's tags into ``hr`` alone."""
+
+    def __init__(self) -> None:
+        super().__init__({})
+
+    async def validate_retain(self, ctx) -> ValidationResult:
+        return ValidationResult.accept()
+
+    async def validate_recall(self, ctx) -> ValidationResult:
+        return ValidationResult.accept()
+
+    async def validate_reflect(self, ctx) -> ValidationResult:
+        return ValidationResult.accept()
+
+    async def filter_retain_facts(self, ctx: RetainFactsContext) -> list[MemoryReview] | None:
+        return [MemoryReview(tags=["hr"]) if "salary" in f.text else MemoryReview() for f in ctx.facts]
+
+
+# Two chunks under a 60-char chunk size, so a re-retain that edits only the second keeps the first
+# one's memories as survivors.
+_PAY = "Alice's salary is ninety thousand euros, paid monthly."
+_HIKING = "Bob enjoys hiking in the hills on weekends with friends."
+_CYCLING = "Bob enjoys cycling by the river on weekends with friends."
+
+
+async def _units(memory: MemoryEngine, bank_id: str, request_context) -> list[dict]:
+    units = (await memory.list_memory_units(bank_id, document_id="doc-pay", request_context=request_context))["items"]
+    return [u for u in units if u["fact_type"] != "observation"]
+
+
+async def _retain_pay(memory: MemoryEngine, bank_id: str, request_context, content: str, **item) -> None:
+    await memory.retain_batch_async(
+        bank_id,
+        [{"content": content, "document_id": "doc-pay", "tags": ["public"], **item}],
+        request_context=request_context,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("again", "item"),
+    [
+        (_PAY + "\n\n" + _HIKING, {}),
+        (_PAY + "\n\n" + _CYCLING, {}),
+        (_CYCLING, {"update_mode": "append"}),
+    ],
+    ids=["same-content", "one-chunk-edited", "append"],
+)
+async def test_retaining_the_document_again_keeps_the_tags_the_extension_gave(
+    memory: MemoryEngine, request_context, again, item
+):
+    """The memories of a re-retain's unchanged chunks are not shown to the hook again, so the
+    re-retain must not undo what the hook decided for them the first time."""
+    memory._operation_validator = _Restricting()
+    bank_id = f"test-review-reretain-{uuid.uuid4().hex[:8]}"
+    try:
+        await memory._ensure_bank_exists(bank_id, request_context)
+        await memory._config_resolver.update_bank_config(bank_id, {"retain_chunk_size": 60})
+        first = _PAY if item else _PAY + "\n\n" + _HIKING
+        await _retain_pay(memory, bank_id, request_context, first)
+        units = await _units(memory, bank_id, request_context)
+        pay = {u["id"]: sorted(u["tags"]) for u in units if "salary" in u["text"]}
+        assert pay and all(tags == ["hr"] for tags in pay.values()), pay
+
+        await _retain_pay(memory, bank_id, request_context, again, **item)
+
+        after = {u["id"]: (u["text"], sorted(u["tags"])) for u in await _units(memory, bank_id, request_context)}
+        # The same units (their chunk was not extracted again), with the tags the hook gave them,
+        # and every other memory on the document's tags.
+        assert {uid: after[uid][1] for uid in pay if uid in after} == pay, after
+        assert all(tags == ["public"] for uid, (text, tags) in after.items() if uid not in pay), after
+    finally:
+        await memory.delete_bank(bank_id, request_context=request_context)
